@@ -115,7 +115,8 @@ if (!empty($_GET)) {
 	if ($timeout == 0) { $timeout = 5; }
 
 	$default_firstname = get_config('auth/wp2moodle', 'firstname') ?: "no-firstname"; // php 5.3 ternary
-	$default_lastname = get_config('auth/wp2/moodle', 'lastname') ?: "no-lastname";
+	$default_lastname = get_config('auth/wp2moodle', 'lastname') ?: "no-lastname";
+	$idnumber_prefix = get_config('auth/wp2moodle', 'idprefix') ?: "";
 
 	// if userdata didn't decrypt, then timestamp will = 0, so following code will be bypassed anyway (e.g. bad data)
 	$timestamp = (integer) get_key_value($userdata, "stamp"); // remote site should have set this to new DateTime("now").getTimestamp(); which is a unix timestamp (utc)
@@ -130,7 +131,7 @@ if (!empty($_GET)) {
 		$firstname = get_key_value($userdata, "firstname") ?: $default_firstname;
 		$lastname = get_key_value($userdata, "lastname") ?: $default_lastname;
 		$email = get_key_value($userdata, "email");
-		$idnumber = get_key_value($userdata, "idnumber"); // the users id in the wordpress database, stored here for possible user-matching
+		$idnumber = $idnumber_prefix . get_key_value($userdata, "idnumber"); // the users id in the wordpress database, stored here for possible user-matching, optionaly prefixed to avoid clashes
 		$cohort_idnumbers = get_key_value($userdata, "cohort"); // the cohort to map the user user; these can be set as enrolment options on one or more courses, if it doesn't exist then skip this step
 		$group_idnumbers = get_key_value($userdata, "group");
 		$course_idnumbers = get_key_value($userdata, "course");
@@ -262,14 +263,12 @@ if (!empty($_GET)) {
 			foreach ($ids as $group) {
 				if ($DB->record_exists('groups', array('idnumber'=>$group))) {
 					$grouprow = $DB->get_record('groups', array('idnumber'=>$group));
-					enrol_into_course($grouprow->courseid, $user->id);
+					$courseId = $grouprow->courseid;
+					enrol_into_course($courseId, $user->id);
 					if (!$DB->record_exists('groups_members', array('groupid'=>$grouprow->id, 'userid'=>$user->id))) {
 						// internally triggers groups_member_added event
 						groups_add_member($grouprow->id, $user->id); //  not a component ,'enrol_wp2moodle');
 					}
-
-					// if the plugin auto-opens the course, then find the course this group is for and set it as the opener link
-					$courseId = $grouprow->courseid;
 				}
 			}
 		}
@@ -301,13 +300,18 @@ if (!empty($_GET)) {
 			}
 			// if an activity is specified, then work out its url.
 			if ($activity > 0) {
-				$mod = $DB->get_records_sql('select cm.id, m.name from {course_sections} cs
-						inner join {course_modules} cm on cs.course = cm.course
-						inner join {modules} m on cm.module = m.id
-						where cs.course = ? and cs.visible = 1 and cm.visible = 1 order by cs.sequence', array($courseId), $activity - 1, 1); // and cs.section > 0
-				if (!empty($mod)) {
-					$mod = array_pop($mod);
-					$SESSION->wantsurl = new moodle_url("/mod/$mod->name/view.php", array("id" => $mod->id));
+				$course = get_course($courseId);
+				$modinfo = get_fast_modinfo($course);
+				$index = 0;
+				foreach ($modinfo->get_cms() as $cmid => $cm) {
+					if ($cm->uservisible && $cm->available) {
+						if ($index === $activity) {
+							// echo PHP_EOL . $index, ".", $cmid, " name=", $cm->modname, ", name=" . $cm->name;//. "=>" . $cm;
+							$SESSION->wantsurl = new moodle_url("/mod/" . $cm->modname . "/view.php", array("id" => $cmid));
+							break;
+						}
+						$index += 1;
+					}
 				}
 			}
 		}
